@@ -9,15 +9,13 @@
 #include <pthread.h>
 #include <vector>
 #include <list>
+#include <chrono>
 
 
 #define MTU 1500
 
-struct chuncks {
-   char* array;
-};
-
 using namespace std;
+using namespace std::chrono;
 
 int windowSize = 50;
 
@@ -72,36 +70,8 @@ void processClient(int socketData, int nClientPort) {
     long int filelen = ftell(fp);
     rewind(fp);      
     int nPackets = (filelen / (MTU - 6)) + 1;  
-    cout << " Nombre Paquets : " << nPackets << "In file : " << endl;  
 
-    char allSegments[nPackets+1][MTU];
-    cout << " Nombre Paquets : " << nPackets << endl; 
-    int nLast;
-
-    for (int i=1; i<=nPackets; ++i) {
-        //cout << "inside for" << endl;
-        char bufSeg[6];
-        clearBuf(dataBuffer);
-        sprintf(bufSeg, "%06d", i);
-        memcpy(dataBuffer,bufSeg,6);
-        int n = fread(dataBuffer+6, 1, MTU-6, fp);
-        char copy[n];
-        memcpy(copy,dataBuffer+6,n);
-        if (i == nPackets) nLast = n;
-        memcpy(allSegments[i], dataBuffer, MTU);
-        //cout << "N: " << n << " " << strncmp(copy,allSegments[i]+6,n) << endl;
-    }
-    fclose(fp);
-    cout << "File length : " << filelen << " Nombre Paquets : " << nPackets << " Last n : " << nLast << endl;
-
-    FILE *toWrite;
-
-    toWrite = fopen("copy.jpg", "wb");
-
-    for(int i=1; i<=nPackets; ++i) {
-        int n = i == nPackets ? nLast : MTU-6;
-        fwrite(allSegments[i]+6,1,n,toWrite);
-    }
+    cout << "File length : " << filelen << " Nombre Paquets : " << nPackets << endl;
 
     int nSent = 0;
     int lastAck = 0;
@@ -112,69 +82,77 @@ void processClient(int socketData, int nClientPort) {
     double coeffRTT = 1/windowSize;
     double rttMoy = 0.05;
     
-    
+    auto startTime = high_resolution_clock::now();
+    struct timeval timeout;      
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 10000;
+    setsockopt (socketData, SOL_SOCKET, SO_RCVTIMEO, &timeout,sizeof timeout);
     
     while(true) {
         //cout << "Window Size : " << windowSize << endl;
-        struct timespec timeout;
-        timeout.tv_sec = (long)(coeffRTT*rttMoy*1e-6);
-        timeout.tv_nsec = (long)(coeffRTT*rttMoy * 1e3) % (long)(1e9);
-        setsockopt (socketData, SOL_SOCKET, SO_RCVTIMEO, &timeout,sizeof timeout);
         if (lastAck == nPackets) break;
         if (start) {
-            start = false;
+            //start = false;
             ackIgnore = 0;
             int lastToBeSent = nPackets > lastAck+windowSize ? lastAck+windowSize : nPackets;
             //cout << "Last to be sent : " << lastToBeSent << " Last ack : " << lastAck << endl;
             for (int i=lastAck+1; i <= lastToBeSent; ++i) {
                 //cout << "In LOOP : " << i << endl;
-                int n = i == nPackets ? nLast+6 : MTU;
-                sendto(socketData, allSegments[i], n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
-            }
-            nSent = lastToBeSent;
-        } else if (change) {
-            //cout << "Inside Change" << endl;
-            change = false;
-            ackIgnore = 0;
-            windowSize += 2;
-            int lastToBeSent = nPackets > lastAck+1+windowSize ? lastAck+1+windowSize : nPackets;
-            for (int i=lastAck+1; i <= lastToBeSent; ++i) {
-                int n = i == nPackets ? nLast+6 : MTU;
-                sendto(socketData, allSegments[i], n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
+                clearBuf(dataBuffer);
+                char bufSeg[6];
+                sprintf(bufSeg, "%06d", i);
+                memcpy(dataBuffer,bufSeg,6);
+                fseek(fp, (MTU-6)*(i-1), SEEK_SET);
+                int n = fread(dataBuffer+6, 1, MTU-6, fp);
+                sendto(socketData, dataBuffer, n+6, 0, (struct sockaddr *)&addrData, sizeof(addrData));
             }
             nSent = lastToBeSent;
         }
-        clearBuf(dataBuffer);
-        int n = recvfrom(socketData, dataBuffer, MTU, 0, (struct sockaddr *)&addrData, &sizeData);
-        if (n==-1) {
-            //cout << "Fin TIMEOUT" << endl;
-            start = true;
-            retransmit++;
-            windowSize -= 2;
-        } else if (strncmp(dataBuffer, "ACK", 3) == 0) {
-            //cout << "Ack Reçu" << endl;
-            char nAck[10];
-            memcpy(nAck, dataBuffer+3, n);
-            int receivedAck;
-            sscanf(nAck, "%d", &receivedAck);
-            //cout << "Ack Reçu : " << receivedAck << endl;
+        int receivedAcks = 0;
+        int previousWindow = windowSize;
+        while (lastAck < nSent && receivedAcks < previousWindow) {
+            //cout << "Waiting for ACKS" << endl;
+            clearBuf(dataBuffer);
+            int n = recvfrom(socketData, dataBuffer, MTU, 0, (struct sockaddr *)&addrData, &sizeData);
+            if (n==-1) {
+                //cout << "Fin TIMEOUT" << endl;
+                start = true;
+                retransmit += windowSize-receivedAcks;
+                //windowSize -= windowSize > 2 ? 2 : 1;
+                break;
+            } else if (strncmp(dataBuffer, "ACK", 3) == 0) {
+                ////cout << "Ack Reçu" << endl;
+                ++receivedAcks;
+                //cout << "RACKS : " << receivedAcks << " WindowSize : " << previousWindow << endl;
+                char nAck[10];
+                memcpy(nAck, dataBuffer+3, n);
+                int receivedAck;
+                sscanf(nAck, "%d", &receivedAck);
+                //cout << "Ack Reçu : " << receivedAck << endl;
 
-            if (lastAck < receivedAck) {
-                change = true;
-                lastAck = receivedAck;
+                if (lastAck < receivedAck) {
+                    //cout << "NEW ACK" << endl;
+                    //change = true;
+                    lastAck = receivedAck;
+                    //windowSize *= lastAck == nSent ? 2 : 1;
+                }
             }
         }
         
         
     }
+    auto stop = high_resolution_clock::now();
+    auto duration = duration_cast<milliseconds>(stop - startTime);
     sendto(socketData, "FIN", 3, 0, (struct sockaddr *)&addrData, sizeof(addrData));
-    cout << "Fichier Envoyé" << endl;
+    cout << "Fichier Envoyé Avec ce nombre de retransmissions : " << retransmit << endl;
+    double timeTaken = (double)((double)((int)(duration.count()/1000))+(double)(duration.count()%1000)/1000.0);
+    cout << "Cela a pris : " << timeTaken << "s" << endl;
+    cout << "Vous avez un débit de : " << ((double)(filelen)/(1024.0*1024.0))/timeTaken << " Avec un fichier de cette taille : " << ((double)(filelen)/(1024.0*1024.0)) << endl;
     //cout << dataBuffer << endl;
     close(socketData);
 }
 
-int main(int argc, char const *argv[])
-{
+int main(int argc, char const *argv[]) {
     if (argc == 1) {
         cout << "Vous n'avez pas donné le bon nombre d'aguments\n" 
         << "Utilisation ./server1 nport tailleFenetre" << endl;
