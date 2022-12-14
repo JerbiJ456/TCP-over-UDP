@@ -185,18 +185,20 @@ void processClient(int socketData, int nClientPort) {
             startThread = true;
         ack_mut.lock();
 		if(timeup) {
-			cout<<"TIME OUT ATTEINT"<<endl;
+			//cout<<"TIME OUT ATTEINT"<<endl;
 			//sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
 			for(auto pac :  window){
 				sendto(socketData, pac.data, pac.n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
 			}
-            cout << windowSize << endl;
+            //cout << windowSize << endl;
             windowSize = startingWindow;
 			timeup = false;
+            ackIgnore++;
 		}
         else if (fastRetransmit) {
             sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
             fastRetransmit = false;
+            retransmit++;
         }
 		ack_mut.unlock();
     }
@@ -206,10 +208,13 @@ void processClient(int socketData, int nClientPort) {
     auto stop = high_resolution_clock::now();
     auto duration = duration_cast<milliseconds>(stop - startTime);
     sendto(socketData, "FIN", 3, 0, (struct sockaddr *)&addrData, sizeof(addrData));
-    cout << "Fichier Envoyé Avec ce nombre de retransmissions : " << retransmit << endl;
+    cout << "---------------------------------------------------------------------------------------" << endl;
+    cout << "Client au port n : " << nClientPort << endl;
+    cout << "Fichier Envoyé Avec ce nombre de retransmissions : " << retransmit << " et ce nombre de timeouts : " << ackIgnore << endl;
     double timeTaken = (double)((double)((int)(duration.count()/1000))+(double)(duration.count()%1000)/1000.0);
     cout << "Cela a pris : " << timeTaken << "s" << endl;
     cout << "Vous avez un débit de : " << ((double)(MTU*nPackets)/(1024.0*1024.0))/timeTaken << " Avec un fichier de cette taille : " << ((double)(filelen)/(1024.0*1024.0)) << endl;
+    cout << "---------------------------------------------------------------------------------------" << endl;
     //cout << dataBuffer << endl;
     close(socketData);
 }
