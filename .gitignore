@@ -1,4 +1,4 @@
 /.vscode
-*.deb
 /ouais
 *.py
+*Threaded*
