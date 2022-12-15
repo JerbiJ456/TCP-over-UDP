@@ -224,7 +224,7 @@ int main(int argc, char const *argv[]) {
     int portUDP = stoi(argv[1]);
 
     char bufferUDP[MTU];
-    int nClientPort = 1000;
+    int nClientPort = 1500;
 
     struct sockaddr_in addrUDP, addrData;
 
