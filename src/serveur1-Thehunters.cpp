@@ -27,9 +27,9 @@ typedef struct __attribute__((__packed__)) {
     struct timeval sent;
 }chunk;
 
-unsigned int windowSize = 1;
+unsigned int windowSize = 3;
 unsigned int ssthreash = 20;
-unsigned int maxWindowSize = 40;
+unsigned int maxWindowSize = 70;
 unsigned int startingWindow = 1;
 int lastAck = 0;
 
@@ -52,7 +52,7 @@ void recvThread(int SocketAck, struct sockaddr_in addrData) {
     //chrono::_V2::system_clock::time_point stop;
 	int oldacks = 0;
 	timeout.tv_sec = 0;
-	timeout.tv_usec = 5000;
+	timeout.tv_usec = 500;
     unsigned int newTimeout;
 
     while (!startThread) {
@@ -94,7 +94,7 @@ void recvThread(int SocketAck, struct sockaddr_in addrData) {
             if(receivedAck > lastAck) {
                 window.erase(window.begin(), window.begin()+(receivedAck-lastAck));
                 lastAck = receivedAck;
-                windowSize = min(maxWindowSize, windowSize+1);
+                windowSize = min(maxWindowSize, windowSize+2);
                 //stop = high_resolution_clock::now();
             } else if (receivedAck == lastAck) {
                 if(++oldacks == 3){
@@ -186,12 +186,9 @@ void processClient(int socketData, int nClientPort) {
         ack_mut.lock();
 		if(timeup) {
 			//cout<<"TIME OUT ATTEINT"<<endl;
-            //sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
-			for(auto pac :  window){
-				sendto(socketData, pac.data, pac.n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
-			}
+            sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
             //cout << windowSize << endl;
-            windowSize = startingWindow;
+            windowSize /= 2 + 1;
 			timeup = false;
             ackIgnore++;
 		}
