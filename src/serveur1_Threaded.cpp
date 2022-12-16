@@ -306,7 +306,5 @@ int main(int argc, char const *argv[]) {
         nClientPort++;
         cout << "Connexion établie !!" << endl;
     }
-
-
     return 0;
 }
