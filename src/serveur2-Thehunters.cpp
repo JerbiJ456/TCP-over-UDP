@@ -13,9 +13,12 @@
 #include <ctime>
 #include <sys/types.h> 
 #include <sys/time.h>
+#include <map>
 
 
 #define MTU 1500
+#define ALPHA 0.125
+#define BETA 0.25
 
 using namespace std;
 using namespace std::chrono;
@@ -24,14 +27,20 @@ typedef struct __attribute__((__packed__)) {
     int seqNum;
     int n;
     char data[MTU];
-    struct timeval sent;
 }chunk;
 
-unsigned int windowSize = 1;
+unsigned int windowSize = 2;
 unsigned int ssthreash = 20;
-unsigned int maxWindowSize = 50;
-unsigned int startingWindow = 1;
+unsigned int maxWindowSize = 30;
+unsigned int countedRtt = 0;
+int rtt = 0;
 int lastAck = 0;
+
+map<int, chrono::_V2::system_clock::time_point> rttPerPacket;
+
+double smoothedRTT = 0;
+double meanDeviation = 0;
+long rto = 5000;
 
 //chrono::_V2::system_clock::time_point start;
 
@@ -49,36 +58,19 @@ void recvThread(int SocketAck, struct sockaddr_in addrData) {
     int rt;
     socklen_t sizeData = sizeof(addrData);
 	struct timeval timeout;
-    //chrono::_V2::system_clock::time_point stop;
 	int oldacks = 0;
-	timeout.tv_sec = 0;
-	timeout.tv_usec = 5000;
-    unsigned int newTimeout;
 
     while (!startThread) {
         continue;
     }
 
-    bool first = true;
-
     while (startThread) {
-
-        if (first) {
-            if (setsockopt(SocketAck, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout) < 0) {
-                return;
-            }
-            first = false;
-        } /*else {
-            // (1 - alpha) * RTT + alpha * (time_ack_received - time_segment_sent)
-            timeout.tv_sec = 0;
-            newTimeout = (long)(1-0.2)*timeout.tv_usec + (long)0.2*duration_cast<microseconds>(stop - start).count();
-            timeout.tv_usec = newTimeout;
-            cout << timeout.tv_usec << endl;
-            if (setsockopt(SocketAck, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout) < 0) {
-                return;
-            }
-        }*/
-
+        
+        timeout.tv_sec = 0;
+        timeout.tv_usec = rto;
+        if (setsockopt(SocketAck, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout) < 0) {
+            return;
+        }
         int n = recvfrom(SocketAck, ackRCV, 20, 0, (struct sockaddr *)&addrData, &sizeData);
         if (n < 0) {
             ack_mut.lock();
@@ -94,10 +86,16 @@ void recvThread(int SocketAck, struct sockaddr_in addrData) {
             if(receivedAck > lastAck) {
                 window.erase(window.begin(), window.begin()+(receivedAck-lastAck));
                 lastAck = receivedAck;
-                windowSize = min(maxWindowSize, windowSize+2);
+                auto stop = high_resolution_clock::now();
+                rtt = (rtt*countedRtt + duration_cast<milliseconds>(stop - rttPerPacket[lastAck]).count()) / (countedRtt+1);
+                smoothedRTT = (1-ALPHA) + ALPHA*rtt;
+                meanDeviation = (1-BETA)*meanDeviation + BETA*abs(rtt-smoothedRTT);
+                rto = (long) (smoothedRTT+4*meanDeviation);
+                //cout << "RTO : " << rto << endl;
+                windowSize = min(windowSize+2, maxWindowSize);
                 //stop = high_resolution_clock::now();
             } else if (receivedAck == lastAck) {
-                if(++oldacks == 3){
+                if(++oldacks == 2){
 					oldacks = 0;
 					fastRetransmit = true;
                 }
@@ -158,7 +156,6 @@ void processClient(int socketData, int nClientPort) {
     auto startTime = high_resolution_clock::now();
 
     chunk dataChunk = {};
-    bool make_thread = true;
 	thread th0;
     th0 = thread(recvThread, socketData, addrData);
     
@@ -169,12 +166,13 @@ void processClient(int socketData, int nClientPort) {
             memset(&dataChunk, 0, sizeof(chunk));
             nSent++;
             dataChunk.seqNum = nSent;
-            char bufSeg[6];
+            char bufSeg[7];
             sprintf(bufSeg, "%06d", nSent);
             memcpy(dataChunk.data,bufSeg,6);
             fseek(fp, (MTU-6)*(nSent-1), SEEK_SET);
             int n = fread(dataChunk.data+6, 1, MTU-6, fp);
             dataChunk.n = n+6;
+            rttPerPacket[dataChunk.seqNum] = high_resolution_clock::now();
             sendto(socketData, dataChunk.data, n+6, 0, (struct sockaddr *)&addrData, sizeof(addrData));
             //seqToIndex.insert(pair<int, int>(nSent, window.size()));
             ack_mut.lock();
@@ -186,22 +184,23 @@ void processClient(int socketData, int nClientPort) {
         ack_mut.lock();
 		if(timeup) {
 			//cout<<"TIME OUT ATTEINT"<<endl;
-			//sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
-			for(auto pac :  window) {
+            for(auto pac :  window) {
+                rttPerPacket[pac.seqNum] = high_resolution_clock::now();
 				sendto(socketData, pac.data, pac.n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
 			}
-            cout << windowSize << endl;
-            windowSize /= 2+1;
+			//sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
+            //cout << windowSize << endl;
+            windowSize -= windowSize < 3 ? 0 : 1;
 			timeup = false;
-            ackIgnore++;
 		}
         else if (fastRetransmit) {
-            //sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
             for(auto pac :  window) {
+                rttPerPacket[pac.seqNum] = high_resolution_clock::now();
 				sendto(socketData, pac.data, pac.n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
 			}
+            //sendto(socketData, window[0].data, window[0].n, 0, (struct sockaddr *)&addrData, sizeof(addrData));
+            windowSize -= windowSize < 3 ? 0 : 1;
             fastRetransmit = false;
-            retransmit++;
         }
 		ack_mut.unlock();
     }
@@ -211,13 +210,10 @@ void processClient(int socketData, int nClientPort) {
     auto stop = high_resolution_clock::now();
     auto duration = duration_cast<milliseconds>(stop - startTime);
     sendto(socketData, "FIN", 3, 0, (struct sockaddr *)&addrData, sizeof(addrData));
-    cout << "---------------------------------------------------------------------------------------" << endl;
-    cout << "Client au port n : " << nClientPort << endl;
-    cout << "Fichier Envoyé Avec ce nombre de retransmissions : " << retransmit << " et ce nombre de timeouts : " << ackIgnore << endl;
+    cout << "Fichier Envoyé Avec ce nombre de retransmissions : " << retransmit << endl;
     double timeTaken = (double)((double)((int)(duration.count()/1000))+(double)(duration.count()%1000)/1000.0);
     cout << "Cela a pris : " << timeTaken << "s" << endl;
     cout << "Vous avez un débit de : " << ((double)(MTU*nPackets)/(1024.0*1024.0))/timeTaken << " Avec un fichier de cette taille : " << ((double)(filelen)/(1024.0*1024.0)) << endl;
-    cout << "---------------------------------------------------------------------------------------" << endl;
     //cout << dataBuffer << endl;
     close(socketData);
 }
@@ -263,14 +259,28 @@ int main(int argc, char const *argv[]) {
     int socketData;
     struct sockaddr_in addrClient;
 
+    struct timeval timeout;
+
     while(true) {
         //clearBuf(bufferUDP);
         memset((char *)&addrClient, 0, sizeof(addrClient));
         socklen_t sizeClient = sizeof(addrClient);
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 0;
+        if (setsockopt(socketUDP, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout) < 0) {
+            cout << "Time Out FAILED" << endl;
+            exit(0);
+        }
         bool handShake = false;
         while(!handShake) {
             cout << "En attente du SYN" << endl;
             int n = recvfrom(socketUDP, bufferUDP, MTU, 0, (struct sockaddr *)&addrClient, &sizeClient);
+            timeout.tv_sec = 0;
+            timeout.tv_usec = rto;
+            if (setsockopt(socketUDP, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout) < 0) {
+                cout << "Time Out FAILED" << endl;
+                exit(0);
+            }
             if (strncmp("SYN", bufferUDP, 3) == 0) {
                 cout << "SYN reçu" << endl;
                 if(nClientPort == portUDP) ++nClientPort;
@@ -283,8 +293,10 @@ int main(int argc, char const *argv[]) {
                     processClient(socketData, nClientPort);
                     exit(0);
                 }
-                sendto(socketUDP, synAck.c_str(), MTU, 0, (struct sockaddr *)&addrClient, sizeof(addrClient));
-                int n = recvfrom(socketUDP, bufferUDP, MTU, 0, (struct sockaddr *)&addrClient, &sizeClient);
+                //auto startTime = high_resolution_clock::now();
+                do {
+                    sendto(socketUDP, synAck.c_str(), MTU, 0, (struct sockaddr *)&addrClient, sizeof(addrClient));
+                } while (recvfrom(socketUDP, bufferUDP, MTU, 0, (struct sockaddr *)&addrClient, &sizeClient) < 0);
                 if (strncmp("ACK", bufferUDP, 3) == 0) {
                     cout << "ACK reçu" << endl;
                     handShake = true;
@@ -294,7 +306,5 @@ int main(int argc, char const *argv[]) {
         nClientPort++;
         cout << "Connexion établie !!" << endl;
     }
-
-
     return 0;
 }

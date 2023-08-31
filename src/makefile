@@ -4,7 +4,6 @@ serveur-Thehunters: allObjectFiles
 	g++ serveur1-Thehunters.o -o ../bin/serveur1-Thehunters -pthread
 	g++ serveur2-Thehunters.o -o ../bin/serveur2-Thehunters -pthread
 	g++ serveur3-Thehunters.o -o ../bin/serveur3-Thehunters -pthread
-	g++ serveur1_Threaded.o -o ../bin/serveur1_Threaded -pthread
 	rm -f *.o
 
 allObjectFiles: serveur1-Thehunters.cpp serveur2-Thehunters.cpp serveur3-Thehunters.cpp serveur1_Threaded.cpp
@@ -14,4 +13,4 @@ allObjectFiles: serveur1-Thehunters.cpp serveur2-Thehunters.cpp serveur3-Thehunt
 	g++ -c serveur1_Threaded.cpp -o serveur1_Threaded.o
 
 clean:
-	rm -f ../bin/serveur1-Thehunters ../bin/serveur2-Thehunters ../bin/serveur3-Thehunters ../bin/serveur1_Threaded
+	rm -f ../bin/serveur1-Thehunters ../bin/serveur2-Thehunters ../bin/serveur3-Thehunters
